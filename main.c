@@ -1,7 +1,6 @@
 // clang-format off
 #include <stdio.h>
 #include <windows.h>
-#include <timeapi.h>
 
 char *Code;
 int CodePtr;
@@ -172,13 +171,11 @@ int main(int argc, const char *argv[]) {
         fwrite(Code, 1, CodePtr, OutFile);
         fclose(OutFile);
     }
-
-    DWORD (*timeGetTime)() = (DWORD(*)())GetProcAddress(LoadLibrary("winmm.dll"), "timeGetTime");
-
+    
     void (*f)() = (void(*)())Code;
-    unsigned int start = timeGetTime();
+    unsigned int start = GetTickCount();
     f();
-    int end = timeGetTime();
+    int end = GetTickCount();
     
     fwrite(Buf, 1, I, stdout);
 
