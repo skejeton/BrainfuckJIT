@@ -1,30 +1,45 @@
 // clang-format off
+
+// Uses: fopen, fseek, ftell, fread, fclose, fprintf
+//       memset, memcpy
+//       printf, getchar
 #include <stdio.h>
+
+// Uses: VirtualAlloc, GetTickCount
 #include <windows.h>
+
 
 char *Code;
 int CodePtr;
+
 int Stk[256];
-int Sp = 0;
+int StkPtr = 0;
+
 char *Buf;
-int I = 0;
+int BufPtr = 0;
 
-#define OP(c) Code[CodePtr++] = c
-#define DW(c) *(DWORD*)(Code + CodePtr) = c; CodePtr += 4
-#define AT(i) (DWORD)(Code + CodePtr + i)
+char *Data;
 
-int getCharacter() {
-    return getchar();
+char *Input;
+int InputSz;
+
+
+#define OP(C) Code[CodePtr++] = C
+#define DW(C) *(DWORD*)(Code + CodePtr) = C; CodePtr += 4
+#define AT(I) (DWORD)(Code + CodePtr + I)
+
+
+// To minimize I/O, we provide a custom putchar function, that only flushes 
+// the buffer when a newline appears, (also at the end).
+void flushBuf() {
+    fwrite(Buf, 1, BufPtr, stdout);
+    BufPtr = 0;
 }
 
 void putCharacter(char chr) {
-    Buf[I++] = chr;
-    Buf[I] = 0;
-    // NOTE: To minimize I/O, we only flush the buffer when a newline appears, (also at the end).
-    if (chr == '\n') {
-        fwrite(Buf, 1, I, stdout);
-        I = 0;
-    }
+    Buf[BufPtr++] = chr;
+    Buf[BufPtr] = 0;
+    if (chr == '\n') flushBuf();
 }
 
 void emitPreulde(int Addr) {
@@ -55,8 +70,8 @@ void emitMinus(char Count) {
 void emitGetchar() {
     // PUSH ebx
     OP(0x53);
-    // CALL getCharacter
-    OP(0xE8); DW((int)getCharacter - AT(4));
+    // CALL getchar
+    OP(0xE8); DW((int)getchar - AT(4));
     // POP ebx
     OP(0x5B);
     // MOV byte [ebx], al
@@ -80,15 +95,15 @@ void emitLoop() {
     // CMP [ebx], 0
     OP(0x80); OP(0x3B); OP(0x00);
     // JE [end]
-    OP(0x0F); OP(0x84); Stk[Sp++] = AT(0); DW(0);
+    OP(0x0F); OP(0x84); Stk[StkPtr++] = AT(0); DW(0);
 }
 
 void emitEndLoop() {
-    Sp--;
+    StkPtr--;
     // JMP [start]
-    OP(0xE9); DW(Stk[Sp] - (3+2) - AT(4));
+    OP(0xE9); DW(Stk[StkPtr] - (3+2) - AT(4));
     // Write the jump offset
-    *(int*)(Stk[Sp]) = AT(0) - (Stk[Sp] + 4);
+    *(int*)(Stk[StkPtr]) = AT(0) - (Stk[StkPtr] + 4);
 }
 
 int emitReturn(void *Code) {
@@ -99,12 +114,11 @@ int emitReturn(void *Code) {
 }
 
 int main(int argc, const char *argv[]) {
-    char *Data = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    Data  = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    Code  = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    Input = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    Buf   = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     memset(Data, 0, 0x100000);
-    Code = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    CodePtr = 0;
-    char *Input = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    Buf = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
     if (argc != 2 && argc != 3) {
         fprintf(stderr, "Usage: %s <file> [dump]\n", argv[0]);
@@ -116,17 +130,18 @@ int main(int argc, const char *argv[]) {
         fprintf(stderr, "Error: could not open file\n");
         return 0;
     }
+
     fseek(File, 0, SEEK_END);
-    size_t Size = ftell(File);
+    InputSz = ftell(File);
     fseek(File, 0, SEEK_SET);
-    fread(Input, 1, Size, File);
+    fread(Input, 1, InputSz, File);
     fclose(File);
 
     char LastInstr = Input[0];
     char Count = 0;
 
     emitPreulde((int)Data+0x50000);
-    for (int i = 0; i < Size; i++) {
+    for (int i = 0; i < InputSz; i++) {
         if (LastInstr != Input[i]) {
             switch (LastInstr) {
             case '>' : emitRight(Count); break;
@@ -155,7 +170,7 @@ int main(int argc, const char *argv[]) {
         case '-' : emitMinus(Count); break;
     }
 
-    if (Sp != 0) {
+    if (StkPtr != 0) {
         fprintf(stderr, "Error: unmatched brackets\n");
         return 0;
     }
@@ -177,7 +192,7 @@ int main(int argc, const char *argv[]) {
     f();
     int end = GetTickCount();
     
-    fwrite(Buf, 1, I, stdout);
+    flushBuf();
 
     printf("\nOK (%dms)\n", end-start);
 }
