@@ -1,6 +1,6 @@
 # About
 
-A Brainfuck compiler that compiles the program to x86 machine codes, and runs it.
+A Brainfuck compiler that compiles the program to x86 machine code, and runs it.
 
 You can download the latest version in [releases](https://github.com/skejeton/BrainfuckJIT/releases).
 
