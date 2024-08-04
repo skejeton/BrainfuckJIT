@@ -3,109 +3,93 @@
 #include <windows.h>
 #include <timeapi.h>
 
-int MP = 0;
+char *Code;
+int CodePtr;
+int Stk[256];
+int Sp = 0;
 char *Buf;
 int I = 0;
 
-void getCharacter() {
-    *((char*)MP) = getchar();
+#define OP(c) Code[CodePtr++] = c
+#define DW(c) *(DWORD*)(Code + CodePtr) = c; CodePtr += 4
+#define AT(i) (DWORD)(Code + CodePtr + i)
+
+int getCharacter() {
+    return getchar();
 }
 
-void putCharacter() {
-    Buf[I++] = *(char*)MP;
+void putCharacter(char chr) {
+    Buf[I++] = chr;
     Buf[I] = 0;
     // NOTE: To minimize I/O, we only flush the buffer when a newline appears, (also at the end).
-    if (*(char*)MP == '\n') {
+    if (chr == '\n') {
         fwrite(Buf, 1, I, stdout);
         I = 0;
     }
 }
 
-int emitRight(void *Code, char Count) {
-    // ADD [memptr], Count
-    char opc[7] = {0x83, 0x05};
-    *(int*)(opc + 2) = (int)&MP;
-    opc[6] = Count;
-    memcpy(Code, opc, 7);
-    return 7;
+void emitPreulde(int Addr) {
+    // MOV ebx, Addr
+    OP(0xBB); DW(Addr);
 }
 
-int emitLeft(void *Code, char Count) {
-    // SUB [memptr], Count
-    char opc[7] = {0x83, 0x2D};
-    *(int*)(opc + 2) = (int)&MP;
-    opc[6] = Count;
-    memcpy(Code, opc, 7);
-    return 7;
+void emitRight(char Count) {
+    // ADD ebx, Count
+    OP(0x83); OP(0xC3); OP(Count);
 }
 
-int emitPlus(void *Code, char Count) {
-    // MOV eax, [memptr]
-    // ADD [eax], Count
-    char opc[8] = {0xa1};
-    *(int*)(opc + 1) = (int)&MP;
-    opc[5] = 0x80;
-    opc[7] = Count;
-    memcpy(Code, opc, 8);
-    return 8;
+void emitLeft(char Count) {
+    // SUB ebx, Count
+    OP(0x83); OP(0xEB); OP(Count);
 }
 
-int emitMinus(void *Code, char Count) {
-    // MOV eax, [memptr]
-    // ADD [eax], Count
-    char opc[8] = {0xa1};
-    *(int*)(opc + 1) = (int)&MP;
-    opc[5] = 0x80;
-    opc[6] = 0x28;
-    opc[7] = Count;
-    memcpy(Code, opc, 8);
-    return 8;
+void emitPlus(char Count) {
+    // ADD [ebx], Count
+    OP(0x80); OP(0x03); OP(Count);
 }
 
-int emitGetchar(void *Code) {
-    // CALL getchar
-    char opc[5] = {0};
-    opc[0] = 0xE8;
-    *(int*)(opc + 1) = (int)getCharacter - (int)Code - 5;
-    memcpy(Code, opc, 5);
-    return 5;
+void emitMinus(char Count) {
+    // SUB [ebx], Count
+    OP(0x80); OP(0x2B); OP(Count);
 }
 
-int emitPutchar(void *Code) {
-    // CALL putchar
-    char opc[5] = {0};
-    opc[0] = 0xE8;
-    *(int*)(opc + 1) = (int)putCharacter - (int)Code - 5;
-    memcpy(Code, opc, 5);
-    return 5;
+void emitGetchar() {
+    // PUSH ebx
+    OP(0x53);
+    // CALL getCharacter
+    OP(0xE8); DW((int)getCharacter - AT(4));
+    // POP ebx
+    OP(0x5B);
+    // MOV byte [ebx], al
+    OP(0x88); OP(0x03);
 }
 
-int emitLoop(void *Code, int *Stk, int *Sp) {
-    // MOV eax, [memptr]
-    // CMP [eax], 0
+void emitPutchar() {
+    // PUSH ebx
+    OP(0x53);
+    // PUSH [ebx]
+    OP(0xFF); OP(0x33);
+    // CALL putCharacter 
+    OP(0xE8); DW((int)putCharacter - AT(4));
+    // POP ebx -- This one to clean up the stack
+    OP(0x5B);
+    // POP ebx
+    OP(0x5B);
+}
+
+void emitLoop() {
+    // CMP [ebx], 0
+    OP(0x80); OP(0x3B); OP(0x00);
     // JE [end]
-    char opc[5 + 3 + 6] = {0x00};
-    opc[0] = 0xA1;
-    *(int*)(opc + 1) = (int)&MP;
-    opc[5] = 0x80;
-    opc[6] = 0x38;
-    opc[7] = 0x00;
-    opc[8] = 0x0F;
-    opc[9] = 0x84;
-    Stk[(*Sp)++] = (int)Code + 5 + 3 + 2;
-    memcpy(Code, opc, 5 + 3 + 6);
-    return 5 + 3 + 6;
+    OP(0x0F); OP(0x84); Stk[Sp++] = AT(0); DW(0);
 }
 
-int emitEndLoop(void *Code, int *Stk, int *Sp) {
+void emitEndLoop() {
+    Sp--;
     // JMP [start]
-    (*Sp)--;
-    char opc[5] = {0x00};
-    opc[0] = 0xE9;
-    *(int*)(Stk[*Sp]) = ((int)Code + 5) - (Stk[*Sp] + 4);
-    *(int*)(opc + 1) = (Stk[*Sp] - (5+3+2)) - ((int)Code + 5);
-    memcpy(Code, opc, 5);
-    return 5;
+    OP(0xE9); DW(Stk[Sp] - (3+2) - AT(4));
+    // Write the jump offset
+    *(int*)(Stk[Sp]) = AT(0) - (Stk[Sp] + 4);
 }
 
 int emitReturn(void *Code) {
@@ -118,10 +102,10 @@ int emitReturn(void *Code) {
 int main(int argc, const char *argv[]) {
     char *Data = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     memset(Data, 0, 0x100000);
-    char *Code = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    Code = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    CodePtr = 0;
     char *Input = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     Buf = VirtualAlloc(0, 0x100000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    MP = (int)Data+0x50000;
 
     if (argc != 2 && argc != 3) {
         fprintf(stderr, "Usage: %s <file> [dump]\n", argv[0]);
@@ -139,28 +123,26 @@ int main(int argc, const char *argv[]) {
     fread(Input, 1, Size, File);
     fclose(File);
 
-    int Offs = 0;
     char LastInstr = Input[0];
     char Count = 0;
-    int Stk[256];
-    int Sp = 0;
 
+    emitPreulde((int)Data+0x50000);
     for (int i = 0; i < Size; i++) {
         if (LastInstr != Input[i]) {
             switch (LastInstr) {
-            case '>' : Offs += emitRight(Code+Offs, Count); break;
-            case '<' : Offs += emitLeft(Code+Offs, Count); break;
-            case '+' : Offs += emitPlus(Code+Offs, Count); break;
-            case '-' : Offs += emitMinus(Code+Offs, Count); break;
+            case '>' : emitRight(Count); break;
+            case '<' : emitLeft(Count); break;
+            case '+' : emitPlus(Count); break;
+            case '-' : emitMinus(Count); break;
             }
             Count = 0;
         }
         LastInstr = Input[i];
         switch (Input[i]) {
-        case ',' : Offs += emitGetchar(Code+Offs); break;
-        case '.' : Offs += emitPutchar(Code+Offs); break;
-        case '[' : Offs += emitLoop(Code+Offs, Stk, &Sp); break;
-        case ']' : Offs += emitEndLoop(Code+Offs, Stk, &Sp); break;
+        case ',' : emitGetchar(); break;
+        case '.' : emitPutchar(); break;
+        case '[' : emitLoop(); break;
+        case ']' : emitEndLoop(); break;
         case '>' : Count++; break;
         case '<' : Count++; break;
         case '+' : Count++; break;
@@ -168,10 +150,10 @@ int main(int argc, const char *argv[]) {
         }
     }
     switch (LastInstr) {
-        case '>' : Offs += emitRight(Code+Offs, Count); break;
-        case '<' : Offs += emitLeft(Code+Offs, Count); break;
-        case '+' : Offs += emitPlus(Code+Offs, Count); break;
-        case '-' : Offs += emitMinus(Code+Offs, Count); break;
+        case '>' : emitRight(Count); break;
+        case '<' : emitLeft(Count); break;
+        case '+' : emitPlus(Count); break;
+        case '-' : emitMinus(Count); break;
     }
 
     if (Sp != 0) {
@@ -179,7 +161,7 @@ int main(int argc, const char *argv[]) {
         return 0;
     }
 
-    Offs += emitReturn(Code+Offs);
+    CodePtr += emitReturn(Code+CodePtr);
 
     if (argc == 3) {
         FILE *OutFile = fopen(argv[2], "wb");
@@ -187,7 +169,7 @@ int main(int argc, const char *argv[]) {
             fprintf(stderr, "Error: could not open output file\n");
             return 0;
         }
-        fwrite(Code, 1, Offs, OutFile);
+        fwrite(Code, 1, CodePtr, OutFile);
         fclose(OutFile);
     }
 
